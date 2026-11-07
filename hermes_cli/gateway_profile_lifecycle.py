@@ -29,6 +29,28 @@ def ack_failure(answer):
     return "host control socket did not answer"
 
 
+def _served_names(profiles) -> set[str] | None:
+    """Normalize an ``identify`` served set to profile names.
+
+    v0.23+ publishes each served profile as ``{"profile_id", "home"}``; older gateways publish bare
+    names. ``None`` means the payload carried no usable served set.
+    """
+    if not isinstance(profiles, list):
+        return None
+    from gateway.host_attach import profile_name_for_home
+    names: set[str] = set()
+    for entry in profiles:
+        if isinstance(entry, dict):
+            home = entry.get("home") or entry.get("profile_id")
+            if home:
+                names.add(profile_name_for_home(str(home)))
+            elif entry.get("profile") or entry.get("name"):
+                names.add(str(entry.get("profile") or entry.get("name")))
+        else:
+            names.add(str(entry))
+    return names
+
+
 def _await_served_state(host_home, name: str, *, served: bool, timeout: float | None = None) -> bool:
     """Poll the host's live served set until ``name`` matches ``served`` or the deadline lapses.
 
@@ -43,11 +65,11 @@ def _await_served_state(host_home, name: str, *, served: bool, timeout: float | 
     deadline = time.monotonic() + timeout
     while True:
         answer = identify_gateway(host_home, timeout=2.0)
-        profiles = answer.get("served_profiles") if isinstance(answer, dict) else None
-        if isinstance(profiles, list):
-            if (name in profiles) == served:
+        names = _served_names(answer.get("served_profiles") if isinstance(answer, dict) else None)
+        if names is not None:
+            if (name in names) == served:
                 return True
-            if not profiles:
+            if not names:
                 # A multiplexer with no recorded served set cannot be confirmed this way.
                 return False
         if time.monotonic() >= deadline:

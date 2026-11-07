@@ -521,17 +521,37 @@ def _lifecycle_host(monkeypatch, gw, root, secondary):
     monkeypatch.setattr(gw, '_host_multiplexer_for_all_verb', lambda: owner)
 
 
-def test_pending_lifecycle_reply_is_confirmed_by_polling(homes, monkeypatch, capsys):
+def test_served_names_normalizes_names_and_homes(homes):
+    """v0.23 publishes served profiles as ``{profile_id, home}``; older gateways publish names."""
+    from hermes_cli.gateway_profile_lifecycle import _served_names
+    root, secondary = homes
+    assert _served_names(['default', 'worker']) == {'default', 'worker'}
+    assert _served_names([{'profile_id': str(root), 'home': str(root)},
+                          {'profile_id': str(secondary), 'home': str(secondary)}]) == {'default', 'worker'}
+    assert _served_names(None) is None
+    assert _served_names({'nope': True}) is None
+
+
+@pytest.mark.parametrize('shape', ['names', 'homes'])
+def test_pending_lifecycle_reply_is_confirmed_by_polling(homes, monkeypatch, capsys, shape):
     """A serve/unserve that outlasts the control verb's reply budget answers ``pending`` while it
     still runs on the host loop; the CLI must poll the live served set, not read that as a failure."""
     from hermes_cli import gateway as gw
     from gateway import control_socket
     root, secondary = homes
     _lifecycle_host(monkeypatch, gw, root, secondary)
+
+    def served(*names):
+        if shape == 'names':
+            return list(names)
+        homes_by_name = {'default': root, 'worker': secondary}
+        return [{'profile_id': str(homes_by_name[n]), 'home': str(homes_by_name[n])} for n in names]
+
     # Both verbs answer `pending` (the operation is still in flight).
     monkeypatch.setattr(control_socket, 'request_unserve_profile', lambda home, name: {'pending': True})
     monkeypatch.setattr(control_socket, 'request_serve_profile_hot', lambda home, name: {'pending': True})
-    states = iter([{'served_profiles': ['default']}, {'served_profiles': ['default', 'worker']}])
+    states = iter([{'served_profiles': served('default')},
+                   {'served_profiles': served('default', 'worker')}])
     monkeypatch.setattr(control_socket, 'identify_gateway', lambda home, **kw: next(states))
     gw._cmd_restart(SimpleNamespace())
     output = capsys.readouterr().out
@@ -549,7 +569,7 @@ def test_pending_lifecycle_reply_still_reports_unconfirmed(homes, monkeypatch, c
     (secondary / 'gateway.parked').touch()
     monkeypatch.setattr(control_socket, 'request_serve_profile_hot', lambda home, name: {'pending': True})
     monkeypatch.setattr(control_socket, 'identify_gateway',
-                        lambda home, **kw: {'served_profiles': ['default']})
+                        lambda home, **kw: {'served_profiles': [{'profile_id': str(root), 'home': str(root)}]})
     monkeypatch.setattr(lifecycle, '_CONFIRM_TIMEOUT_SECS', 0.0)
     gw._cmd_start(SimpleNamespace())
     output = capsys.readouterr().out
