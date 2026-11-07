@@ -3621,15 +3621,16 @@ def _launch_external_cron_worker(job: dict) -> bool:
     ack_path = handoff_dir / f"{execution_id}.ready"
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
-    command = [
-        sys.executable,
-        "-m",
-        "cron.scheduler",
-        "--external-worker-file",
-        str(payload_path),
-        "--ack-file",
-        str(ack_path),
-    ]
+    # Launch through the installation launcher, not ``sys.executable -m``: under PM the
+    # gateway's interpreter is the bare managed Python and its dependencies arrive only
+    # via hermes_bootstrap's activate_dependencies, which ``-m cron.scheduler`` never runs
+    # (worker died with "No module named 'ruamel'" before its ownership ack).
+    from hermes_cli._launchers import installation_command
+    command = installation_command(
+        Path(__file__).resolve().parent.parent,
+        ["--external-worker-file", str(payload_path), "--ack-file", str(ack_path)],
+        module="cron.scheduler",
+    )
 
     from agent.secret_scope import is_multiplex_active
     from cron.scheduler_provider import routed_profile_fire
