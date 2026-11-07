@@ -1367,3 +1367,36 @@ def test_restart_wait_counts_exclude_only_scoped_workers(tmp_path, monkeypatch):
     keys = {scheduler._inflight_key(job_id) for job_id in jobs}
     assert not keys & scheduler._scope_isolated_job_ids
     assert not keys & set(scheduler._running_worker_pids)
+
+
+def test_launch_external_worker_uses_the_installation_launcher(tmp_path, monkeypatch):
+    """Under PM the gateway runs the bare managed Python; the worker must launch through the
+    installation launcher so hermes_bootstrap activates its dependencies before cron.scheduler
+    imports them (the failure mode was "No module named 'ruamel'" before the ownership ack)."""
+    from cron import scheduler
+    import hermes_cli._launchers as launchers
+    from tools.process_registry import GatewayChildDispatch
+
+    job = {"id": "job-1", "execution_id": "exec-1", "prompt": "work"}
+    monkeypatch.setattr(scheduler, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "tools.process_registry.restart_safe_gateway_child_argv",
+        lambda command, **_: GatewayChildDispatch("degraded", command),
+    )
+    built = {}
+
+    def installation_command(repo_root, args=(), *, module="hermes_cli.main", python=None, home=None):
+        built["repo_root"] = repo_root
+        built["args"] = list(args)
+        built["module"] = module
+        return ["/opt/hermes/.hermes/bin/hermes", "--run-module", module, *args]
+
+    monkeypatch.setattr(launchers, "installation_command", installation_command)
+    spawned, _payloads, _handoff, _get = _stub_external_worker_launch(scheduler, monkeypatch)
+
+    assert scheduler._launch_external_cron_worker(job) is True
+    assert built["repo_root"] == Path(scheduler.__file__).resolve().parent.parent
+    assert built["module"] == "cron.scheduler"
+    assert built["args"][0] == "--external-worker-file"
+    assert "--ack-file" in built["args"]
+    assert spawned[0][0][0] == "/opt/hermes/.hermes/bin/hermes"
